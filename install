@@ -14,7 +14,9 @@ sudo apt-get install -y nodejs npm
 apt-get update 
 apt-get upgrade
 apt-get install -y build-essential python3 python3-pip libssl-dev apt-get libmysqlclient-dev libssl-dev default-libmysqlclient-dev python3-dev python-MySQLdb python-dev libmysqlclient-dev 
-pip install mysqlclient
+pip3 install mysqlclient
+sudo pip install django --upgrade
+pip3 install django-filter
 
 debconf-set-selections <<< "mysql-server-5.7 mysql-server/root_password password $mysqlroot"
 sudo debconf-set-selections <<< "mysql-server-5.7 mysql-server/root_password_again password $mysqlroot"
@@ -23,7 +25,7 @@ apt-get -y install 'mysql-server-5.7'
 
 cat >/tmp/user.sql <<EOL
 CREATE USER 'openeats'@'localhost' IDENTIFIED BY  '${dbpass}';
-CREATE DATABASE openeats;
+CREATE DATABASE openeatsi CHARACTER SET utf8 COLLATE utf8_bin;
 GRANT ALL ON openeats.* TO 'openeats'@'localhost';
 FLUSH PRIVILEGES;
 EOL
@@ -32,7 +34,7 @@ mysql -u root --password="$myssqlroot" </tmp/user.sql >/dev/null 2>&1
 
 rm /tmp/user.sql
 
-mkdir  -p /opt/openeats/{openeats-apach2,openeats-api}
+mkdir  -p /opt/openeats/{openeats-apache2,openeats-api}
 git clone https://github.com/open-eats/openeats-api.git /opt/openeats/openeats-api/
 pip3 install -U -r /opt/openeats/openeats-api/base/requirements.txt
 touch /opt/openeats/openeats-api/.env
@@ -41,7 +43,7 @@ cat >/opt/openeats/openeats-api/.env <<EOL
 MYSQL_HOST=localhost
 MYSQL_DATABASE=openeats
 MYSQL_USER=openeats
-MYSQL_ROOT_PASSWORD=${mysqlroot}
+MYSQL_ROOT_PASSWORD='${dbpass}'
 
 # Django config
 API_URL=0.0.0.0:5210
@@ -54,25 +56,33 @@ ALLOWED_HOST=${website}
 # If you are serving content behind an HTTPS proxy,
 # Set this to `true`.
 # See: <https://docs.djangoproject.com/en/1.10/ref/settings/#secure-proxy-ssl-header>
-HTTP_X_FORWARDED_PROTO=true
+HTTP_X_FORWARDED_PROTO=false
   
 # Node config
 NODE_ENV=development
 NODE_URL=${website}:5200
-NODE_API_URL=https://${website}
 NODE_LOCALE=en
 EOL
 
-cat>/opt/openeats/openeats-api/base/prod-entrypoint.sh<<EOL 
 BASEDIR=/opt/openeats/openeats-api
+cat>/opt/openeats/openeats-api/base/prod-entrypoint.sh<<EOL 
 
  #Update the DB if it needs it and compile static files.
-python3 $BASEDIR/manage.py migrate --no-input
-python3 $BASEDIR/manage.py collectstatic --no-input
+python3 ${BASEDIR}/manage.py migrate --no-input
+python3 ${BASEDIR}/manage.py collectstatic --no-input
 
  # Start up gunicorn
-bash $BASEDIR/base/gunicorn_start.sh
+bash ${BASEDIR}/base/gunicorn_start.sh
 EOL
+
+NAME="OpenEats"                     
+DJANGODIR=/opt/openeats/openeats-api
+USER=root                           
+GROUP=root                          
+NUM_WORKERS=5                       
+DJANGO_SETTINGS_MODULE=base.settings
+DJANGO_WSGI_MODULE=base.wsgi        
+NODE_API_URL=https://${website}
 
 cat>/opt/openeats/openeats-api/base/gunicorn_start.sh<<EOL
 #!/usr/bin/env sh
@@ -85,20 +95,20 @@ NUM_WORKERS=5                                     # how many worker processes sh
 DJANGO_SETTINGS_MODULE=base.settings              # which settings file should Django use
 DJANGO_WSGI_MODULE=base.wsgi                      # WSGI module name
 
-echo "Starting $NAME as `whoami`"
+echo "Starting ${NAME} as `whoami`"
 
 # Activate the virtual environment
-cd $DJANGODIR
-export DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE
-export PYTHONPATH=$DJANGODIR:$PYTHONPATH
+cd ${DJANGODIR}
+export DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE}
+export PYTHONPATH=${DJANGODIR}:${PYTHONPATH}
 
 # Start your Django Unicorn
 # Programs meant to be run under supervisor should not daemonize themselves (do not use --daemon)
 exec gunicorn ${DJANGO_WSGI_MODULE}:application \
-  --name $NAME \
-  --workers $NUM_WORKERS \
-  --user=$USER --group=$GROUP \
-  --bind=$API_URL
+  --name ${NAME} \
+  --workers ${NUM_WORKERS} \
+  --user=${USER} --group=${GROUP} \
+  --bind=${API_URL}
 EOL
 touch /lib/systemd/system/openeats.service
 cat>/lib/systemd/system/openeats.service<<EOL
@@ -123,7 +133,7 @@ WantedBy=multi-user.target
 
 EOL
 
-
+systemctl daemon-reload
 systemctl start openeats.service
 mkdir /opt/openeats/openeats-web/
 git clone https://github.com/open-eats/openeats-web.git /opt/openeats/openeats-web/
@@ -135,7 +145,7 @@ cat>/opt/openeats/openeats-web/.env<<EOL
 export MYSQL_HOST=localhost
 export MYSQL_DATABASE=openeats
 export MYSQL_USER=openeats
-export MYSQL_ROOT_PASSWORD=${mysqlroot}
+export MYSQL_ROOT_PASSWORD='${dbpass}'
 
 # Django config
 export API_URL=0.0.0.0:5210
@@ -148,21 +158,22 @@ export ALLOWED_HOST=${website}
 # If you are serving content behind an HTTPS proxy,
 # Set this to `true`.
 # See: https://docs.djangoproject.com/en/1.10/ref/settings/#secure-proxy-ssl-header
-export HTTP_X_FORWARDED_PROTO=true 
+export HTTP_X_FORWARDED_PROTO=false 
 
 # Node config
 export NODE_ENV=development
 export NODE_URL=${website}:5200 
-export NODE_API_URL=https://${website}
 export NODE_LOCALE=en
 EOL
 
 
-source /opt/openeats/openeats-web/.env
+#source /opt/openeats/openeats-web/.env
 
-npm install
-npm install yarn
-/opt/openeats/openeats-web/node_modules/yarn/bin/yarn start
+cd /opt/openeats/openeats-web/
+. ./.env
+sudo npm install
+sudo npm install yarn
+sudo /opt/openeats/openeats-web/node_modules/yarn/bin/yarn start
 
 ln -s /opt/openeats/openeats-web/build /opt/openeats/openeats-apache2/public-ui
 ln -s /opt/openeats/openeats-api/static-files /opt/openeats/openeats-apache2/static-files
@@ -233,8 +244,10 @@ cat>/etc/apache2/sites-available/$website.conf<<EOL
        </Directory>
    </VirtualHost>
 EOL
+chmod -R 775 /opt/openeats/
+chown -R www-data: /opt/openeats/openeats-apache2
+a2enmod rewrite headers proxy proxy proxy_ajp proxy_http rewrite deflate headers proxy_balancer proxy_connect proxy_html  
 a2ensite $website
 systemctl restart openeats.service
-service apache2 reload
-
+service apache2 restart
 echo '###### Are these guys fucking insane! #####'
